@@ -1,87 +1,93 @@
-use std::fs;
-use std::path::Path;
-use std::time::Instant;
-use walkdir::WalkDir;
+use std::path::Path; //for handling filesystem paths
+use std::time::Instant; // for measuring how long operations take
+use walkdir::WalkDir; // library for recursively walking directories
+use std::env; // for accessing command-line arguments
 
-#[derive(Debug)]
-struct FileStats {
-    path: String,
-    size: u64,
-    file_type: String,
-    last_modified: std::time::SystemTime,
+#[derive(Debug)] // printing of the struct for debugging
+struct FileStats { 
+    path: String, // stores full path of the file/directory
+    size: u64, // size in bytes (u64 for large files)
+    file_type: String, // file, directory or other
+    last_modified: std::time::SystemTime, // last modification time stamp
 }
 
-struct FileSystem {
-    root_path: String,
-    stats: Vec<FileStats>,
+struct FileSystem { 
+    root_path: String,  // the starting directory path
+    stats: Vec<FileStats>, // vector to store all file/directory information
 }
 
 impl FileSystem {
     fn new(root_path: &str) -> Self {
         FileSystem {
-            root_path: root_path.to_string(),
-            stats: Vec::new(),
+            root_path: root_path.to_string(), // convery &str to owned string 
+            stats: Vec::new(),  //initialize empty vector
         }
     }
 
     fn scan_directory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let start_time = Instant::now();
-        println!("Starting directory scan...");
+        let start_time = Instant::now();  // start timing the operation
+        println!("Starting directory scan of '{}'...", self.root_path);
+        self.stats.clear(); // clear any existing stats 
 
-        // Clear existing stats
-        self.stats.clear();
+        let mut total_size = 0;
+        let mut file_count = 0;
+        let mut dir_count = 0;
 
-        // Walk the directory
-        for entry in WalkDir::new(&self.root_path)
-            .into_iter()
-            .filter_map(|e| e.ok())
+        for entry in WalkDir::new(&self.root_path) // start at root_path
+            .into_iter() // create iterator over entries
+            .filter_map(|e| e.ok()) // skip entries with errors
         {
-            let metadata = entry.metadata()?;
+            let metadata = entry.metadata()?; //get file/directory metadata
             let file_type = if metadata.is_dir() {
+                dir_count += 1;
                 "directory"
             } else if metadata.is_file() {
+                file_count += 1;
+                total_size += metadata.len();
                 "file"
             } else {
                 "other"
             };
 
             self.stats.push(FileStats {
-                path: entry.path().display().to_string(),
-                size: metadata.len(),
-                file_type: file_type.to_string(),
-                last_modified: metadata.modified()?,
+                path: entry.path().display().to_string(), //convert path to string
+                size: metadata.len(), // get file size 
+                file_type: file_type.to_string(), // store type
+                last_modified: metadata.modified()?, // get modification
             });
         }
 
         let duration = start_time.elapsed();
-        println!(
-            "Scan completed in {:.2} seconds. Found {} items.",
-            duration.as_secs_f64(),
-            self.stats.len()
-        );
+        println!("\n📊 Scan Summary:");
+        println!("⏱️  Scan completed in {:.2} seconds", duration.as_secs_f64());
+        println!("📁 Found {} directories", dir_count);
+        println!("📄 Found {} files", file_count);
+        println!("💾 Total size: {} MB", total_size / 1_048_576); // Convert to MB
         Ok(())
     }
 
     fn get_directory_size(&self) -> u64 {
         self.stats
-            .iter()
-            .filter(|stat| stat.file_type == "file")
-            .map(|stat| stat.size)
-            .sum()
+            .iter() // iterator over all stats
+            .filter(|stat| stat.file_type == "file") // only look at files
+            .map(|stat| stat.size) // extract size
+            .sum() // sum all sizes
     }
 
-    fn get_file_types_summary(&self) -> std::collections::HashMap<String, usize> {
+    fn get_file_types_summary(&self) -> std::collections::HashMap<String, (usize, u64)> {
         let mut extensions = std::collections::HashMap::new();
         
         for stat in &self.stats {
             if stat.file_type == "file" {
                 let ext = Path::new(&stat.path)
-                    .extension()
-                    .and_then(|os_str| os_str.to_str())
-                    .unwrap_or("no_extension")
-                    .to_lowercase();
+                    .extension() // get file extension
+                    .and_then(|os_str| os_str.to_str()) // attempt string conversion
+                    .unwrap_or("no_extension") // use "no_extension" if none found
+                    .to_lowercase(); // convert to lowoer case
                 
-                *extensions.entry(ext).or_insert(0) += 1;
+                let entry = extensions.entry(ext).or_insert((0, 0));
+                entry.0 += 1; // Increment count
+                entry.1 += stat.size; // Add size
             }
         }
         
@@ -90,35 +96,58 @@ impl FileSystem {
 
     fn find_largest_files(&self, limit: usize) -> Vec<&FileStats> {
         let mut files: Vec<&FileStats> = self.stats
-            .iter()
-            .filter(|stat| stat.file_type == "file")
-            .collect();
+            .iter()  // iterate over all stats
+            .filter(|stat| stat.file_type == "file") // only look at files
+            .collect(); // collect into vector
         
-        files.sort_by(|a, b| b.size.cmp(&a.size));
-        files.truncate(limit);
+        files.sort_by(|a, b| b.size.cmp(&a.size)); // sort by size (largest first)
+        files.truncate(limit); // keep only the first 'limit' files
         files
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut fs = FileSystem::new(".");  // Start with current directory
-    fs.scan_directory()?;
+fn format_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
 
-    // Print basic statistics
-    println!("\nDirectory Summary:");
-    println!("Total size: {} bytes", fs.get_directory_size());
-    
-    println!("\nFile type distribution:");
-    for (ext, count) in fs.get_file_types_summary() {
-        println!("{}: {} files", ext, count);
+    // convert bytes to appropriate unit (GB, MB, KB, or bytes)
+    if size >= GB {
+        format!("{:.2} GB", size as f64 / GB as f64)
+    } else if size >= MB {
+        format!("{:.2} MB", size as f64 / MB as f64)
+    } else if size >= KB {
+        format!("{:.2} KB", size as f64 / KB as f64)
+    } else {
+        format!("{} bytes", size)
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Get directory from command line args or use current directory
+    let path = env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let mut fs = FileSystem::new(&path); // create new filesystem instance
+    fs.scan_directory()?; // scan the directory
+
+    // Print file type distribution
+    println!("\n📋 File Type Distribution:");
+    let mut type_summary: Vec<_> = fs.get_file_types_summary().into_iter().collect();
+    type_summary.sort_by(|a, b| b.1.0.cmp(&a.1.0)); // Sort by count
+    for (ext, (count, size)) in type_summary {
+        println!(".{:<12} {} files ({} total)",
+            ext,
+            count,
+            format_size(size)
+        );
     }
     
-    println!("\nLargest files:");
-    for file in fs.find_largest_files(5) {
-        println!(
-            "{}: {} bytes",
-            file.path,
-            file.size
+    // Print largest files
+    println!("\n🔍 Largest Files:");
+    for (i, file) in fs.find_largest_files(10).iter().enumerate() {
+        println!("{}. {:<50} {}", 
+            i + 1,
+            file.path.replace(&path, "."),
+            format_size(file.size)
         );
     }
 
